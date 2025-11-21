@@ -1,112 +1,71 @@
 import streamlit as st
 import pandas as pd
-import io
+import os
 
-# -------------------------
-# CONFIG
-# -------------------------
-
+# --- Page config ---
 st.set_page_config(page_title="Client Lookup", layout="wide")
 
-SHARED_FILE = "crm_contacts.xlsx"   # Your shared Excel filename
+# --- Load passwords from Streamlit Secrets ---
+ACCESS_PASSWORD = st.secrets["app"]["ACCESS_PASSWORD"]   # General user access
+ADMIN_PASSWORD = st.secrets["app"]["ADMIN_PASSWORD"]     # Admin upload access
 
-# -------------------------
-# SESSION STATE SETUP
-# -------------------------
-
+# --- PASSWORD CHECK ---
 if "authenticated" not in st.session_state:
-    st.session_state["authenticated"] = False
+    st.session_state.authenticated = False
+    st.session_state.is_admin = False
 
-if "is_admin" not in st.session_state:
-    st.session_state["is_admin"] = False
-
-# Handle safe rerun after admin upload
-if st.session_state.get("force_reload", False):
-    st.session_state["force_reload"] = False
-    st.experimental_rerun()
-
-# -------------------------
-# AUTHENTICATION
-# -------------------------
-
-def login_screen():
-    st.sidebar.header("🔒 Login Required")
-
-    user_password = st.sidebar.text_input("Enter Password", type="password")
-
-    if st.sidebar.button("Login"):
-        shared_pw = st.secrets["general_password"]
-        admin_pw = st.secrets["admin_password"]
-
-        if user_password == shared_pw:
-            st.session_state["authenticated"] = True
-            st.session_state["is_admin"] = False
-            st.sidebar.success("Logged in!")
-        elif user_password == admin_pw:
-            st.session_state["authenticated"] = True
-            st.session_state["is_admin"] = True
-            st.sidebar.success("Logged in as Admin!")
-        else:
-            st.sidebar.error("Incorrect password")
-
-    st.stop()
-
-
-# If not authenticated → show login
-if not st.session_state["authenticated"]:
-    login_screen()
-
-# -------------------------
-# LOAD EXCEL DATA
-# -------------------------
-
-def load_data():
-    try:
-        return pd.read_excel(SHARED_FILE)
-    except Exception as e:
-        st.error("Unable to load Excel file.")
+if not st.session_state.authenticated:
+    password = st.text_input("Enter password to access the app:", type="password")
+    
+    if password == ADMIN_PASSWORD:
+        st.session_state.authenticated = True
+        st.session_state.is_admin = True
+        st.success("Admin access granted")
+    elif password == ACCESS_PASSWORD:
+        st.session_state.authenticated = True
+        st.session_state.is_admin = False
+        st.success("Access granted")
+    else:
+        st.warning("Enter the correct password to continue")
         st.stop()
 
-df = load_data()
+# --- App title ---
+st.title("Firmwide Client & Prospect Lookup")
 
-# -------------------------
-# ADMIN UPLOAD SECTION
-# -------------------------
+DATA_FILE = "shared_crm_contacts.xlsx"
 
-if st.session_state["is_admin"]:
-    st.sidebar.markdown("---")
-    st.sidebar.header("🛠 Admin Controls")
+# --- Admin upload sidebar (only visible to admin) ---
+if st.session_state.is_admin:
+    st.sidebar.header("Admin Update")
+    uploaded = st.sidebar.file_uploader("Upload latest CRM file", type=["xlsx", "xls"])
+    if uploaded:
+        pd.read_excel(uploaded, usecols="A:C",
+                      names=["Name", "Client Category", "Servicing Advisor"]) \
+          .to_excel(DATA_FILE, index=False)
+        st.sidebar.success("Updated for everyone!")
+        st.experimental_rerun()  # Reload app with new data
 
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload Updated Excel File",
-        type=["xlsx"],
-        key="admin_upload"
-    )
-
-    if uploaded_file is not None:
-        with open(SHARED_FILE, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        st.sidebar.success("File updated for all users!")
-
-        if st.sidebar.button("Reload App"):
-            st.session_state["force_reload"] = True
-            st.experimental_rerun()
-
-# -------------------------
-# MAIN SEARCH UI
-# -------------------------
-
-st.title("🔍 Client Lookup Tool")
-
-search_query = st.text_input("Search by Client Name")
-
-if search_query:
-    results = df[df.apply(lambda row: search_query.lower() in row.astype(str).str.lower().to_string(), axis=1)]
-    st.write(f"### Results ({len(results)})")
-    st.dataframe(results, use_container_width=True)
+# --- Load data for all users ---
+if os.path.exists(DATA_FILE):
+    df = pd.read_excel(DATA_FILE, usecols="A:C",
+                       names=["Name", "Client Category", "Servicing Advisor"])
 else:
-    st.write("Type a name above to search the client directory.")
+    # Fallback dummy file from GitHub repo
+    df = pd.read_excel("crm_contacts.xlsx", usecols="A:C",
+                       names=["Name", "Client Category", "Servicing Advisor"])
+
+# --- Search interface ---
+st.write("#### Search by name, category, or advisor")
+query = st.text_input("", placeholder="Start typing…", label_visibility="collapsed")
+
+if query:
+    results = df[df.apply(lambda row: row.astype(str).str.contains(query, case=False, na=False).any(), axis=1)]
+    st.dataframe(results, use_container_width=True)
+    st.write(f"**{len(results)}** result(s) found")
+else:
+    st.info("Type to search the client list")
+
+
 
 
 
