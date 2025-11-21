@@ -4,17 +4,22 @@ import pandas as pd
 
 st.set_page_config(page_title="Client Lookup", layout="wide")
 
-# ====================== SECRETS ======================
+# ========================= SECRETS =========================
 ACCESS_PASSWORD = st.secrets["app"]["ACCESS_PASSWORD"]
 ADMIN_PASSWORD  = st.secrets["app"]["ADMIN_PASSWORD"]
 
-# ====================== SESSION STATE ======================
-if "authenticated" not in st.session_state:
-    st.session_state.authenticated = False
-    st.session_state.is_admin = False
-    st.session_state.df = None          # Will hold the uploaded/default data
+# ========================= SESSION STATE =========================
+defaults = {
+    "authenticated": False,
+    "is_admin": False,
+    "df": None,
+    "data_source": "Default file"
+}
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
 
-# ====================== AUTHENTICATION ======================
+# ========================= AUTH =========================
 if not st.session_state.authenticated:
     st.title("Firmwide Client & Prospect Lookup")
     pwd = st.text_input("Enter password", type="password")
@@ -31,73 +36,76 @@ if not st.session_state.authenticated:
             st.error("Incorrect password")
     st.stop()
 
-# ====================== ADMIN UPLOAD (SIDEBAR) ======================
+# ========================= ADMIN UPLOAD =========================
 if st.session_state.is_admin:
     with st.sidebar:
-        st.header("Admin: Upload New Data")
-        uploaded = st.file_uploader(
-            "Upload updated Excel file (3 columns only)",
-            type=["xlsx", "xls"]
-        )
+        st.header("Admin Upload")
+        uploaded = st.file_uploader("Upload new CRM Excel (3 columns)", type=["xlsx", "xls"])
 
-        if uploaded is not None:
-            if st.button("Confirm upload & refresh data"):
-                with st.spinner("Loading file..."):
-                    # This line works with ANY normal CRM export
+        if uploaded and st.button("Confirm Upload & Update Data", type="primary"):
+            with st.spinner("Processing file..."):
+                try:
                     df_new = pd.read_excel(uploaded, usecols=[0,1,2], header=None)
                     df_new.columns = ["Name", "Client Category", "Servicing Advisor"]
-                    df_new = df_new.astype(str).apply(lambda x: x.str.strip()).fillna("")
-
-                    # Save to session state
+                    df_new = df_new.astype(str).apply(lambda x: x.str.strip()).replace("nan", "")
+                    
                     st.session_state.df = df_new
-
-                    # SUCCESS MESSAGE — now placed AFTER st.rerun() is safe
-                    st.success(f"Successfully loaded {uploaded.name} → {len(df_new)} rows")
+                    st.session_state.data_source = f"Uploaded: {uploaded.name} ({len(df_new)} rows)"
+                    st.success("Data updated successfully!")
                     st.rerun()
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-# ====================== LOAD DATA ======================
+# ========================= LOAD DATA =========================
 if st.session_state.df is not None:
     df = st.session_state.df.copy()
-    source = f"Uploaded file ({len(df)} rows)"
 else:
-    # Default file that MUST exist in your repo
     df = pd.read_excel("crm_contacts.xlsx", usecols=[0,1,2], header=None)
     df.columns = ["Name", "Client Category", "Servicing Advisor"]
-    df = df.astype(str).apply(lambda x: x.str.strip()).fillna("")
-    source = f"Default file (crm_contacts.xlsx) – {len(df)} rows"
+    df = df.astype(str).apply(lambda x: x.str.strip()).replace("nan", "")
+    st.session_state.data_source = f"Default file ({len(df)} rows)"
 
-st.caption(f"Data source: {source}")
+# ========================= MAIN APP UI =========================
+st.title("Firmwide Client & Prospect Lookup")
+st.caption(f"Data source: {st.session_state.data_source}")
 
-# ====================== SEARCH (PERFECTLY WORKING) ======================
-st.markdown("### Search by name, category or advisor")
-query = st.text_input("", placeholder="Start typing…", label_visibility="collapsed", key="q")
+st.markdown("### Search by name, category, or advisor")
+query = st.text_input(
+    "",
+    placeholder="Start typing to search…",
+    label_visibility="collapsed",
+    key="search_query"
+)
+
+# Convert everything to string once
+df_str = df.astype(str)
 
 if query:
-    q = query.strip()
-    # This search line is bullet-proof
-    mask = df.astype(str).apply(
-        lambda row: row.str.contains(q, case=False, na=False).any(),
-        axis=1
-    )
+    q = query.strip().lower()
+    # Search in any column
+    mask = df_str.apply(lambda col: col.str.lower().str.contains(q, na=False)).any(axis=1)
     results = df[mask].reset_index(drop=True)
-
+    
     if len(results) > 0:
         st.dataframe(results, use_container_width=True)
-        st.success(f"Found {len(results)} match(es)")
+        st.success(f"Found {len(results)} result(s)")
     else:
-        st.warning("No results – try a partial name")
+        st.warning("No matches found. Try a partial name.")
 else:
-    st.info("Type above to begin searching")
-    st.dataframe(df.head(20), use_container_width=True)
+    st.info("Start typing above to search the client database")
+    # Optional: show small preview
+    # st.dataframe(df.head(10), use_container_width=True)
 
-# ====================== ADMIN TOOLS ======================
+# ========================= ADMIN TOOLS =========================
 if st.session_state.is_admin:
     with st.sidebar:
         st.markdown("---")
         if st.button("Revert to default file"):
             st.session_state.df = None
+            st.session_state.data_source = "Default file"
             st.rerun()
-        st.write(f"**Total rows:** {len(df)}")
+        st.write(f"**Total records:** {len(df)}")
+
 
 
 
