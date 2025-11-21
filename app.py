@@ -1,125 +1,140 @@
 import streamlit as st
 import pandas as pd
-import os
 
-# --- Page config ---
+# --- Page Config ---
 st.set_page_config(page_title="Client Lookup", layout="wide")
 
-# --- Load passwords from Streamlit Secrets ---
+# --- Secrets ---
 ACCESS_PASSWORD = st.secrets["app"]["ACCESS_PASSWORD"]
 ADMIN_PASSWORD = st.secrets["app"]["ADMIN_PASSWORD"]
 
-# --- Initialize session state ---
+# --- Session State Initialization ---
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.is_admin = False
-    st.session_state.df = None  # Will hold the current data
+    st.session_state.df = None          # Holds the current dataframe
+    st.session_state.data_source = ""   # For display info
 
-# --- PASSWORD CHECK ---
+# ===================== AUTHENTICATION =====================
 if not st.session_state.authenticated:
     st.title("Firmwide Client & Prospect Lookup")
-    st.write("#### Please enter the password to continue")
+    st.markdown("### Enter password to access the app")
     
-    password = st.text_input("Password", type="password", key="password_input")
+    pwd = st.text_input("Password", type="password", key="pwd_input")
     
-    if password:
-        if password == ADMIN_PASSWORD:
+    if pwd:
+        if pwd == ADMIN_PASSWORD:
             st.session_state.authenticated = True
             st.session_state.is_admin = True
-            st.success("Admin access granted")
+            st.success("Admin access granted!")
             st.rerun()
-        elif password == ACCESS_PASSWORD:
+        elif pwd == ACCESS_PASSWORD:
             st.session_state.authenticated = True
             st.session_state.is_admin = False
-            st.success("Access granted")
+            st.success("Access granted!")
             st.rerun()
         else:
-            st.error("Incorrect password. Try again.")
-            st.stop()
-    else:
-        st.stop()
+            st.error("Incorrect password")
+    st.stop()
 
-# --- Main App (User is authenticated) ---
+# ===================== AUTHENTICATED APP =====================
 st.title("Firmwide Client & Prospect Lookup")
 
-# --- Admin Upload Section (Sidebar) ---
+# --- Admin Upload (Sidebar) ---
 if st.session_state.is_admin:
-    st.sidebar.header("Admin: Update CRM Data")
-    uploaded = st.sidebar.file_uploader(
-        "Upload latest CRM file (Excel)", 
+    st.sidebar.header("Admin: Upload New CRM Data")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload updated Excel file",
         type=["xlsx", "xls"],
-        help="Only columns A–C will be used: Name, Client Category, Servicing Advisor"
+        help="Only first 3 columns are used: Name, Client Category, Servicing Advisor"
     )
     
-    if uploaded:
+    if uploaded_file is not None:
         try:
-            new_df = pd.read_excel(
-                uploaded,
-                usecols="A:C",
+            # Read the uploaded file correctly
+            df_new = pd.read_excel(
+                uploaded_file,
+                usecols=range(3),  # Columns A, B, C (0-indexed)
+                header=None,
                 names=["Name", "Client Category", "Servicing Advisor"],
                 engine="openpyxl"
             )
-            st.session_state.df = new_df
-            st.sidebar.success("File uploaded and updated successfully!")
-            st.sidebar.dataframe(new_df.head(), use_container_width=True)
-            st.rerun()  # Refresh the app to show new data immediately
+            # Clean any NaN or weird values
+            df_new = df_new.fillna("")
+            
+            # Save to session state so it survives reruns
+            st.session_state.df = df_new
+            st.session_state.data_source = f"Uploaded file: {uploaded_file.name} ({len(df_new)} records)"
+            
+            st.sidebar.success("New data loaded successfully!")
+            st.sidebar.write(f"**Rows:** {len(df_new)}")
+            st.rerun()
+            
         except Exception as e:
             st.sidebar.error(f"Error reading file: {e}")
 
-# --- Load Data ---
-def load_data():
-    # Priority: 1. Session state (latest upload), 2. Local fallback, 3. GitHub default
-    if st.session_state.df is not None:
-        return st.session_state.df.copy()
-    
-    fallback_local = "crm_contacts.xlsx"
-    if os.path.exists(fallback_local):
-        return pd.read_excel(
-            fallback_local,
-            usecols="A:C",
-            names=["Name", "Client Category", "Servicing Advisor"]
-        )
-    
-    # Final fallback: bundled default file (should be in your repo)
-    default_file = "crm_contacts.xlsx"
+# --- Load Data (with correct priority) ---
+@st.cache_data(ttl=3600)  # Cache fallback files only
+def load_default_data():
     return pd.read_excel(
-        default_file,
-        usecols="A:C",
+        "crm_contacts.xlsx",
+        usecols=range(3),
+        header=None,
         names=["Name", "Client Category", "Servicing Advisor"]
-    )
+    ).fillna("")
 
-df = load_data()
+# Priority: 1. Uploaded (session), 2. Default file in repo
+if st.session_state.df is not None:
+    df = st.session_state.df.copy()
+    source_info = st.session_state.data_source
+else:
+    df = load_default_data()
+    source_info = f"Default file (crm_contacts.xlsx) – {len(df)} records"
 
-# --- Search Interface ---
-st.write("#### Search by name, category, or advisor")
+# Show data source info
+st.caption(f"Data source: {source_info}")
+
+# ===================== SEARCH INTERFACE =====================
+st.markdown("#### Search by name, category, or advisor")
 query = st.text_input(
     "",
-    placeholder="Start typing to search…",
+    placeholder="Type to search instantly…",
     label_visibility="collapsed",
-    key="search_query"
+    key="main_search"
 )
 
+# Make search case-insensitive and robust
 if query.strip():
-    mask = df.apply(
-        lambda row: row.astype(str).str.contains(query, case=False, na=False).any(),
-        axis=1
-    )
+    query = query.strip()
+    mask = df.astype(str).apply(
+        lambda col: col.str.contains(query, case=False, na=False, regex=False)
+    ).any(axis=1)
     results = df[mask].reset_index(drop=True)
-    st.dataframe(results, use_container_width=True)
-    st.write(f"**{len(results)}** result(s) found")
+    
+    if len(results) > 0:
+        st.dataframe(results, use_container_width=True)
+        st.success(f"**{len(results)}** result(s) found")
+    else:
+        st.warning("No matches found. Try different keywords.")
 else:
-    st.info("Start typing above to search the client list")
-    st.dataframe(df.head(10), use_container_width=True)  # Optional preview
-    if len(df) > 10:
-        st.write(f"... and {len(df) - 10} more rows")
+    # Show a preview when no search
+    st.info("Start typing above to search")
+    preview = df.head(20)
+    st.dataframe(preview, use_container_width=True)
+    if len(df) > 20:
+        st.caption(f"Showing first 20 of {len(df)} total records")
 
-# --- Footer ---
+# --- Admin Footer ---
 if st.session_state.is_admin:
-    st.sidebar.markdown("---")
-    st.sidebar.write(f"**Total records:** {len(df)}")
-    st.sidebar.caption("You are logged in as **Admin**")
-else:
-    st.caption(f"Total records: {len(df)} | Last updated: see admin for details")
+    with st.sidebar:
+        st.markdown("---")
+        st.write("**Admin Tools**")
+        if st.button("Clear uploaded data → revert to default"):
+            st.session_state.df = None
+            st.session_state.data_source = ""
+            st.rerun()
+        st.write(f"Total records loaded: **{len(df)}**")
+
 
 
 
